@@ -11,25 +11,28 @@ SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 SPOTIFY_REDIRECT_URI  = os.getenv("SPOTIPY_REDIRECT_URI")
 SPOTIFY_SCOPE         = "playlist-read-private"
 
-# Paste your playlist link or ID here:
-raw_playlist = "https://open.spotify.com/playlist/5epr9yWDpDeQ88iirjoEjG?si=27a32f8107b34cbd"
-PLAYLIST_ID = raw_playlist.split("?", 1)[0]
+# Paste your playlist links here:
+raw_individual_playlist = "https://open.spotify.com/playlist/5epr9yWDpDeQ88iirjoEjG?si=27a32f8107b34cbd"
+raw_album_playlist      = "https://open.spotify.com/playlist/4dftFNxIPR76I0qAzGDA0s?si=1590c43ba3dc4acd"
+
+individual_playlist_id = raw_individual_playlist.split("?", 1)[0].split("/")[-1]
+album_playlist_id      = raw_album_playlist.split("?", 1)[0].split("/")[-1]
 
 # ── Spotify: Fetch Playlist Tracks ───────────────────────────────────
-def fetch_spotify_tracks():
+def fetch_spotify_tracks(playlist_id):
     sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id     = SPOTIFY_CLIENT_ID,
         client_secret = SPOTIFY_CLIENT_SECRET,
         redirect_uri  = SPOTIFY_REDIRECT_URI,
         scope         = SPOTIFY_SCOPE
     ))
-    all_tracks = []
-    results = sp.playlist_tracks(PLAYLIST_ID)
-    all_tracks.extend(results["items"])
+    all_items = []
+    results = sp.playlist_tracks(playlist_id)
+    all_items.extend(results["items"])
     while results["next"]:
         results = sp.next(results)
-        all_tracks.extend(results["items"])
-    return all_tracks
+        all_items.extend(results["items"])
+    return all_items
 
 # ── Tidal: OAuth login & search ──────────────────────────────────────
 def login_tidal():
@@ -43,68 +46,124 @@ def login_tidal():
     print("✅ Logged into Tidal\n")
     return session
 
-
 def find_tidal_track(session, title, artist):
     query = f"{title} {artist}"
     search = session.search(query, models=[tidalapi.Track])
     tracks = search.get("tracks", [])
-    if not tracks:
-        return None
     for track in tracks:
-        if artist.lower() in track.artist.name.lower():
-            return track, f"https://tidal.com/browse/track/{track.id}"
+        # match artist and title loosely
+        if (artist.lower() in track.artist.name.lower() and 
+            title.lower() in track.name.lower()):
+            url = f"https://tidal.com/browse/track/{track.id}"
+            return track, url
+    return None
+
+def find_tidal_album(session, album_name, artist):
+    query = f"{album_name} {artist}"
+    search = session.search(query, models=[tidalapi.Album])
+    albums = search.get("albums", [])
+    for alb in albums:
+        # match artist and album name loosely
+        if (artist.lower() in alb.artist.name.lower() and
+            album_name.lower() in alb.name.lower()):
+            url = f"https://tidal.com/browse/album/{alb.id}"
+            return alb, url
     return None
 
 # ── Main ──────────────────────────────────────────────────────────────
 def main():
-    print("🔍 Fetching Spotify playlist…")
-    spotify_items = fetch_spotify_tracks()
-    print(f"  ▶️  Found {len(spotify_items)} tracks\n")
+    print("🔍 Fetching Spotify individual-track playlist…")
+    tracks = fetch_spotify_tracks(individual_playlist_id)
+    print(f"  ▶️  Found {len(tracks)} tracks\n")
 
-    tidal_session = login_tidal()
+    print("🔍 Fetching Spotify album-playlist…")
+    album_items = fetch_spotify_tracks(album_playlist_id)
+    print(f"  ▶️  Found {len(album_items)} tracks (from which we'll extract albums)\n")
 
-    output_rows = []
-    not_found = []
+    tidal = login_tidal()
 
-    print("🔍 Searching on Tidal…")
-    for item in spotify_items:
-        sp_track = item["track"]
-        sp_title  = sp_track["name"]
-        sp_artist = sp_track["artists"][0]["name"]
+    # ── 1) TRACK-LEVEL SEARCH ─────────────────────────────────────────
+    track_rows = []
+    missing_tracks = []
+
+    print("🔍 Searching Tidal for each individual track…")
+    for item in tracks:
+        sp_track  = item["track"]
+        sp_title   = sp_track["name"]
+        sp_artist  = sp_track["artists"][0]["name"]
         print(f"• {sp_title} — {sp_artist}", end="  ")
 
-        result = find_tidal_track(tidal_session, sp_title, sp_artist)
-        if result:
-            tidal_track, tidal_url = result
-            td_title  = tidal_track.name
-            td_artist = tidal_track.artist.name
-            print(f"→ {td_title} — {td_artist}")
-            # collect row data
-            output_rows.append([
+        res = find_tidal_track(tidal, sp_title, sp_artist)
+        if res:
+            td_track, url = res
+            td_title  = td_track.name
+            td_artist = td_track.artist.name
+            print(f"→ {td_title}")
+            track_rows.append([
                 sp_artist,
                 td_artist,
                 sp_title,
                 td_title,
-                tidal_url
+                url
             ])
         else:
             print("→ ❌ Not found")
-            not_found.append(f"{sp_title} — {sp_artist}")
+            missing_tracks.append(f"{sp_title} — {sp_artist}")
 
-    # write the full info CSV
-    with open("tidal_links.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Spotify Artist", "Tidal Artist", "Spotify Title", "Tidal Title", "Tidal URL"])
-        writer.writerows(output_rows)
+    with open("tidal_track_links.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Spotify Artist","Tidal Artist","Spotify Title","Tidal Title","Tidal URL"])
+        w.writerows(track_rows)
 
-    # write not-found
     with open("not_found_tracks.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(not_found))
+        f.write("\n".join(missing_tracks))
 
-    print(f"\n✅ Done!  {len(output_rows)} found, {len(not_found)} missing.")
-    print(" • Full info → tidal_links.csv")
-    print(" • URLs only  → tidal_links.txt")
-    print(" • Missing    → not_found_tracks.txt")
+    print(f"\n✅ Track search done: {len(track_rows)} found, {len(missing_tracks)} missing.")
+    print(" • Tracks → tidal_track_links.csv")
+    print(" • Missing → not_found_tracks.txt\n")
+
+    # ── 2) ALBUM-LEVEL SEARCH ─────────────────────────────────────────
+    # build set of unique (album_name, album_artist)
+    unique = {}
+    for item in album_items:
+        sp_album  = item["track"]["album"]["name"]
+        sp_artist = item["track"]["album"]["artists"][0]["name"]
+        unique[(sp_album, sp_artist)] = True
+
+    album_rows = []
+    missing_albums = []
+
+    print("🔍 Searching Tidal for each unique album…")
+    for (sp_album, sp_artist) in unique:
+        print(f"• {sp_album} — {sp_artist}", end="  ")
+        res = find_tidal_album(tidal, sp_album, sp_artist)
+        if res:
+            td_album, url = res
+            td_name   = td_album.name
+            td_artist = td_album.artist.name
+            print(f"→ {td_name}")
+            album_rows.append([
+                sp_artist,
+                td_artist,
+                sp_album,
+                td_name,
+                url
+            ])
+        else:
+            print("→ ❌ Not found")
+            missing_albums.append(f"{sp_album} — {sp_artist}")
+
+    with open("tidal_album_links.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Spotify Artist","Tidal Artist","Spotify Title","Tidal Title","Tidal URL"])
+        w.writerows(album_rows)
+
+    with open("not_found_albums.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(missing_albums))
+
+    print(f"\n✅ Album search done: {len(album_rows)} found, {len(missing_albums)} missing.")
+    print(" • Albums → tidal_album_links.csv")
+    print(" • Missing → not_found_albums.txt")
 
 if __name__ == "__main__":
     main()
