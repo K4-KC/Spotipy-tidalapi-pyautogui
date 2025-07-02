@@ -3,6 +3,7 @@ import csv
 import spotipy
 import tidalapi
 import webbrowser
+import re
 from spotipy.oauth2 import SpotifyOAuth
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -50,10 +51,17 @@ def find_tidal_track(session, title, artist):
     query = f"{title} {artist}"
     search = session.search(query, models=[tidalapi.Track])
     tracks = search.get("tracks", [])
+    
+    # Remove "(feat. ...)", "(featuring ...)", "(ft. ...)", "(with ...)" parts from title for matching
+    clean_title = re.sub(r'\((?:feat\.?|featuring|ft\.?|with)[^)]*\)', '', title).strip().lower()
+    
     for track in tracks:
+        # Clean the Tidal track name too
+        clean_tidal_title = re.sub(r'\((?:feat\.?|featuring|ft\.?|with)[^)]*\)', '', track.name).strip().lower()
+        
         # match artist and title loosely
         if (artist.lower() in track.artist.name.lower() and 
-            title.lower() in track.name.lower()):
+            clean_title in clean_tidal_title):
             url = f"https://tidal.com/browse/track/{track.id}"
             return track, url
     return None
@@ -91,6 +99,13 @@ def main():
         sp_track  = item["track"]
         sp_title   = sp_track["name"]
         sp_artist  = sp_track["artists"][0]["name"]
+        sp_duration_ms = sp_track["duration_ms"]
+        
+        # Convert duration from milliseconds to minutes:seconds
+        sp_duration_minutes = sp_duration_ms // 60000
+        sp_duration_seconds = (sp_duration_ms % 60000) // 1000
+        sp_duration_str = f"{sp_duration_minutes}:{sp_duration_seconds:02d}"
+        
         print(f"• {sp_title} — {sp_artist}", end="  ")
 
         res = find_tidal_track(tidal, sp_title, sp_artist)
@@ -108,7 +123,7 @@ def main():
             ])
         else:
             print("→ ❌ Not found")
-            missing_tracks.append(f"{sp_title} — {sp_artist}")
+            missing_tracks.append(f"{sp_title} — {sp_artist} ({sp_duration_str})")
 
     with open("tidal_track_links.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
